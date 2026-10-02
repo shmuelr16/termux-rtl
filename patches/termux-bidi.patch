@@ -1,40 +1,103 @@
 diff --git a/terminal-view/src/main/java/com/termux/view/ArabicShaper.java b/terminal-view/src/main/java/com/termux/view/ArabicShaper.java
 new file mode 100644
-index 0000000..938f8c5
+index 0000000..a21e995
 --- /dev/null
 +++ b/terminal-view/src/main/java/com/termux/view/ArabicShaper.java
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,157 @@
 +package com.termux.view;
 +
-+import android.os.Build;
-+
 +/**
-+ * Joins Arabic letters into their presentation forms so that they are drawn connected
-+ * instead of as isolated letters. Uses the ICU4J implementation that is part of Android
-+ * since Android 7.0 (API level 24) and does nothing on older versions.
++ * Joins Arabic letters into their contextual presentation forms (Unicode Arabic
++ * Presentation Forms-B), so that they are drawn connected instead of as isolated
++ * letters. This has to be done here because the platform only shapes text that is
++ * handed to it in one piece, while a terminal draws one column at a time.
++ * <p/>
++ * The character positions are preserved: every letter is replaced by exactly one
++ * presentation form, so the visual column layout computed from the row stays valid.
 + */
 +final class ArabicShaper {
 +
-+    private static final boolean AVAILABLE = Build.VERSION.SDK_INT >= 24;
++    private ArabicShaper() {}
 +
-+    /**
-+     * @return a copy of {@code line} with Arabic letters replaced by their contextual
-+     *         presentation forms, or {@code line} itself if shaping is not available or
-+     *         would not preserve character positions.
-+     */
-+    static char[] shape(char[] line, int charsUsed) {
-+        if (!AVAILABLE || charsUsed <= 0)
-+            return line;
-+        if (!containsArabic(line, charsUsed))
-+            return line;
-+        try {
-+            String shaped = IcuBidi.shape(new String(line, 0, charsUsed));
-+            if (shaped == null || shaped.length() != charsUsed)
-+                return line; // positions would not match the row layout any more
-+            return shaped.toCharArray();
-+        } catch (Throwable ignored) {
-+            return line;
++    /** Joining types of the Unicode ArabicShaping.txt data (simplified). */
++    private static final byte TRANSPARENT = 0;
++    private static final byte NON_JOINING = 1;
++    private static final byte RIGHT_JOINING = 2;
++    private static final byte DUAL_JOINING = 3;
++    private static final byte JOIN_CAUSING = 4;
++
++    /** Isolated, final, initial and medial presentation form of each joining letter. */
++    private static final int[] LETTERS = {
++        0x0621, 0xFE80, -1, -1, -1, NON_JOINING,
++        0x0622, 0xFE81, 0xFE82, -1, -1, RIGHT_JOINING,
++        0x0623, 0xFE83, 0xFE84, -1, -1, RIGHT_JOINING,
++        0x0624, 0xFE85, 0xFE86, -1, -1, RIGHT_JOINING,
++        0x0625, 0xFE87, 0xFE88, -1, -1, RIGHT_JOINING,
++        0x0626, 0xFE89, 0xFE8A, 0xFE8B, 0xFE8C, DUAL_JOINING,
++        0x0627, 0xFE8D, 0xFE8E, -1, -1, RIGHT_JOINING,
++        0x0628, 0xFE8F, 0xFE90, 0xFE91, 0xFE92, DUAL_JOINING,
++        0x0629, 0xFE93, 0xFE94, -1, -1, RIGHT_JOINING,
++        0x062A, 0xFE95, 0xFE96, 0xFE97, 0xFE98, DUAL_JOINING,
++        0x062B, 0xFE99, 0xFE9A, 0xFE9B, 0xFE9C, DUAL_JOINING,
++        0x062C, 0xFE9D, 0xFE9E, 0xFE9F, 0xFEA0, DUAL_JOINING,
++        0x062D, 0xFEA1, 0xFEA2, 0xFEA3, 0xFEA4, DUAL_JOINING,
++        0x062E, 0xFEA5, 0xFEA6, 0xFEA7, 0xFEA8, DUAL_JOINING,
++        0x062F, 0xFEA9, 0xFEAA, -1, -1, RIGHT_JOINING,
++        0x0630, 0xFEAB, 0xFEAC, -1, -1, RIGHT_JOINING,
++        0x0631, 0xFEAD, 0xFEAE, -1, -1, RIGHT_JOINING,
++        0x0632, 0xFEAF, 0xFEB0, -1, -1, RIGHT_JOINING,
++        0x0633, 0xFEB1, 0xFEB2, 0xFEB3, 0xFEB4, DUAL_JOINING,
++        0x0634, 0xFEB5, 0xFEB6, 0xFEB7, 0xFEB8, DUAL_JOINING,
++        0x0635, 0xFEB9, 0xFEBA, 0xFEBB, 0xFEBC, DUAL_JOINING,
++        0x0636, 0xFEBD, 0xFEBE, 0xFEBF, 0xFEC0, DUAL_JOINING,
++        0x0637, 0xFEC1, 0xFEC2, 0xFEC3, 0xFEC4, DUAL_JOINING,
++        0x0638, 0xFEC5, 0xFEC6, 0xFEC7, 0xFEC8, DUAL_JOINING,
++        0x0639, 0xFEC9, 0xFECA, 0xFECB, 0xFECC, DUAL_JOINING,
++        0x063A, 0xFECD, 0xFECE, 0xFECF, 0xFED0, DUAL_JOINING,
++        0x0640, 0xFE40, 0xFE41, 0xFE42, 0xFE43, DUAL_JOINING, // tatweel
++        0x0641, 0xFED1, 0xFED2, 0xFED3, 0xFED4, DUAL_JOINING,
++        0x0642, 0xFED5, 0xFED6, 0xFED7, 0xFED8, DUAL_JOINING,
++        0x0643, 0xFED9, 0xFEDA, 0xFEDB, 0xFEDC, DUAL_JOINING,
++        0x0644, 0xFEDD, 0xFEDE, 0xFEDF, 0xFEE0, DUAL_JOINING,
++        0x0645, 0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4, DUAL_JOINING,
++        0x0646, 0xFEE5, 0xFEE6, 0xFEE7, 0xFEE8, DUAL_JOINING,
++        0x0647, 0xFEE9, 0xFEEA, 0xFEEB, 0xFEEC, DUAL_JOINING,
++        0x0648, 0xFEED, 0xFEEE, -1, -1, RIGHT_JOINING,
++        0x0649, 0xFEEF, 0xFEF0, -1, -1, RIGHT_JOINING,
++        0x064A, 0xFEF1, 0xFEF2, 0xFEF3, 0xFEF4, DUAL_JOINING,
++        0x067E, 0xFB56, 0xFB57, 0xFB58, 0xFB59, DUAL_JOINING,
++        0x0686, 0xFB7A, 0xFB7B, 0xFB7C, 0xFB7D, DUAL_JOINING,
++        0x0698, 0xFB8A, 0xFB8B, -1, -1, RIGHT_JOINING,
++        0x06A9, 0xFB8E, 0xFB8F, 0xFB90, 0xFB91, DUAL_JOINING,
++        0x06AF, 0xFB92, 0xFB93, 0xFB94, 0xFB95, DUAL_JOINING,
++        0x06CC, 0xFBFC, 0xFBFD, 0xFBFE, 0xFBFF, DUAL_JOINING,
++        0x06D2, 0xFBAE, 0xFBAF, -1, -1, RIGHT_JOINING,
++    };
++
++    private static final int LETTER_STRIDE = 6;
++
++    /** Joining type of a character. */
++    private static byte joiningType(char c) {
++        if (c >= 0x064B && c <= 0x065F) return TRANSPARENT; // harakat
++        if (c >= 0x0610 && c <= 0x061A) return TRANSPARENT; // Arabic signs
++        if (c == 0x0670) return TRANSPARENT;
++        if (c >= 0x06D6 && c <= 0x06ED) return TRANSPARENT; // Quranic marks
++        if (c == 0x200C) return NON_JOINING;                // ZWNJ breaks joining
++        if (c == 0x200D) return JOIN_CAUSING;               // ZWJ forces joining
++        for (int i = 0; i < LETTERS.length; i += LETTER_STRIDE) {
++            if (LETTERS[i] == c)
++                return (byte) LETTERS[i + 5];
 +        }
++        return NON_JOINING;
++    }
++
++    /** @return index of the letter table entry, or -1. */
++    private static int letterEntry(char c) {
++        for (int i = 0; i < LETTERS.length; i += LETTER_STRIDE) {
++            if (LETTERS[i] == c)
++                return i;
++        }
++        return -1;
 +    }
 +
 +    private static boolean containsArabic(char[] line, int charsUsed) {
@@ -46,6 +109,56 @@ index 0000000..938f8c5
 +                return true;
 +        }
 +        return false;
++    }
++
++    /**
++     * @return a copy of {@code line} with Arabic letters replaced by their contextual
++     *         presentation forms, or {@code line} itself if it holds no Arabic letters.
++     */
++    static char[] shape(char[] line, int charsUsed) {
++        if (charsUsed <= 0 || !containsArabic(line, charsUsed))
++            return line;
++
++        char[] shaped = line.clone();
++        byte[] types = new byte[charsUsed];
++        for (int i = 0; i < charsUsed; i++)
++            types[i] = joiningType(line[i]);
++
++        for (int i = 0; i < charsUsed; i++) {
++            int entry = letterEntry(line[i]);
++            if (entry < 0)
++                continue;
++
++            boolean joinsPrev = false, joinsNext = false;
++            for (int p = i - 1; p >= 0; p--) {
++                byte type = types[p];
++                if (type == TRANSPARENT)
++                    continue;
++                joinsPrev = type == DUAL_JOINING || type == JOIN_CAUSING;
++                break;
++            }
++            for (int n = i + 1; n < charsUsed; n++) {
++                byte type = types[n];
++                if (type == TRANSPARENT)
++                    continue;
++                joinsNext = type == DUAL_JOINING || type == RIGHT_JOINING || type == JOIN_CAUSING;
++                break;
++            }
++
++            int form;
++            if (joinsPrev && joinsNext)
++                form = 4; // medial
++            else if (joinsPrev)
++                form = 2; // final
++            else if (joinsNext)
++                form = 3; // initial
++            else
++                form = 1; // isolated
++            int codePoint = LETTERS[entry + form];
++            if (codePoint > 0)
++                shaped[i] = (char) codePoint;
++        }
++        return shaped;
 +    }
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/BidiLayout.java b/terminal-view/src/main/java/com/termux/view/BidiLayout.java
@@ -357,30 +470,27 @@ index 0000000..c2b53f5
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/IcuBidi.java b/terminal-view/src/main/java/com/termux/view/IcuBidi.java
 new file mode 100644
-index 0000000..289e4c5
+index 0000000..113a2bd
 --- /dev/null
 +++ b/terminal-view/src/main/java/com/termux/view/IcuBidi.java
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,35 @@
 +package com.termux.view;
 +
-+import android.icu.text.ArabicShaping;
 +import android.icu.text.Bidi;
 +
 +/**
-+ * ICU4J backed implementation of {@link BidiLayout.VisualRuns} and Arabic shaping.
++ * ICU4J backed implementation of {@link BidiLayout.VisualRuns}.
 + * <p/>
-+ * This class references {@code android.icu} which only exists since Android 7.0 (API 24),
-+ * so it must only be loaded after checking {@code Build.VERSION.SDK_INT}.
++ * This class references {@code android.icu} which is only available since Android 7.0
++ * (API level 24), so it must only be loaded after checking {@code Build.VERSION.SDK_INT}.
 + */
 +final class IcuBidi {
++
++    private IcuBidi() {}
 +
 +    static BidiLayout.VisualRuns visualRuns(char[] line, int charsUsed) {
 +        Bidi bidi = new Bidi(new String(line, 0, charsUsed), Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT);
 +        return new IcuVisualRuns(bidi);
-+    }
-+
-+    static String shape(String text) {
-+        return ArabicShaping.shape(text, 0, text.length(), ArabicShaping.LETTER_SHAPE_BY_UNICODE);
 +    }
 +
 +    private static final class IcuVisualRuns implements BidiLayout.VisualRuns {
@@ -392,13 +502,11 @@ index 0000000..289e4c5
 +
 +        @Override public int count() { return mBidi.countRuns(); }
 +
-+        @Override public int logicalStart(int run) { return mBidi.getLogicalStart(run); }
++        @Override public int logicalStart(int run) { return mBidi.getRunStart(mBidi.getVisualRun(run)); }
 +
-+        @Override public int logicalLimit(int run) { return mBidi.getLogicalLimit(run); }
++        @Override public int logicalLimit(int run) { return mBidi.getRunLimit(mBidi.getVisualRun(run)); }
 +
-+        @Override public boolean isRtl(int run) {
-+            return mBidi.getRunDirection(run) == Bidi.DIRECTION_RIGHT_TO_LEFT;
-+        }
++        @Override public boolean isRtl(int run) { return !mBidi.isLeftToRight(mBidi.getVisualRun(run)); }
 +    }
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/TerminalRenderer.java b/terminal-view/src/main/java/com/termux/view/TerminalRenderer.java
