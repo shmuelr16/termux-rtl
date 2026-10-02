@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       PACKAGE_VARIANT: apt-android-7
       TERMUX_APK_VERSION_TAG: rtl-build-${{ github.run_number }}

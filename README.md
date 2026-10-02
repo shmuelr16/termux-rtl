@@ -7,12 +7,24 @@
 
 ## התקנה
 
-1. הורד את ה־APK:
-   [termux-apk-universal.apk](https://github.com/shmuelr16/termux-rtl/releases/latest/download/termux-apk-universal.apk)
-   (למכשיר ארמ64: `termux-apk-arm64-v8a.apk`)
-2. התקן אותו כאפליקציה רגילה (פותח את הקובץ → "התקנה"). הוא מחליף את ה־Termux
-   הקיים בלי למחוק את הנתונים שלך, כי הוא חתום באותו מפתח.
-3. זהו. לא מריצים שום דבר.
+1. הורד את ה־APK המתאים למכשיר שלך:
+   - **רוב הטלפונים** (ארמ64):
+     [termux-apk-arm64-v8a.apk](https://github.com/shmuelr16/termux-rtl/releases/latest/download/termux-apk-arm64-v8a.apk) — 38MB
+   - **כל מכשיר** (כולל x86 ו־32 ביט), הקובץ הגדול:
+     [termux-apk-universal.apk](https://github.com/shmuelr16/termux-rtl/releases/latest/download/termux-apk-universal.apk) — 125MB
+2. פתח את הקובץ ולחץ "התקנה". הוא מחליף את ה־Termux הקיים **בלי למחוק את הקבצים
+   שלך**, כי הוא חתום באותו מפתח בדיוק (מפתח הבדיקות של AOSP — כמו בגרסאות
+   F-Droid ובגרסאות שנבנו מהקוד).
+3. זהו. לא מריצים שום דבר, ולא מגדירים שום פקודה — העברית עובדת מיד, גם בזמן
+   ההקלדה וגם בפלט של כל סוכן קוד.
+
+### אם מותקנת לך הגרסה מ־Google Play
+
+הגרסה של Play חתומה במפתח אחר, ולכן Android לא יאפשר להתקין מעליה.
+אפשרויות:
+- עברו לגרסת F-Droid והתקינו אותה **לפני** שמתקינים את ה־APK כאן — אז ההתקנה
+  מתעדכנת במקום ושומרת הכל.
+- או: גבו את התיקייה `~/` שלכם, הסירו את הגרסה מה־Play, והתקינו את ה־APK כאן.
 
 ## מה התיקון עושה
 
