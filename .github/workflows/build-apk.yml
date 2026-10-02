@@ -1,0 +1,58 @@
+name: Build Termux with RTL
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_VARIANT: apt-android-7
+      TERMUX_APK_VERSION_TAG: rtl-build-${{ github.run_number }}
+      TERMUX_APP_VERSION_NAME: 0.118.0+rtl.${{ github.run_number }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone termux-app
+        uses: actions/checkout@v6
+        with:
+          repository: termux/termux-app
+          ref: 8629e632fcb95da272221be327db653fb24befe9
+          path: termux-app
+
+      - name: Apply RTL patch
+        working-directory: termux-app
+        run: |
+          git apply --verbose ../patches/termux-bidi.patch
+          git diff --stat
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APKs
+        working-directory: termux-app
+        run: ./gradlew assembleDebug
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          find termux-app/app/build/outputs/apk -name '*_universal.apk' -exec cp {} dist/termux-apk-universal.apk \;
+          find termux-app/app/build/outputs/apk -name '*arm64-v8a.apk' -exec cp {} dist/termux-apk-arm64-v8a.apk \;
+          ls -la dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: termux-apk
+          path: dist
+
+      - name: Attach to release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view rtl >/dev/null 2>&1 || gh release create rtl --title "Termux with RTL (עברית)" --notes "Termux with Hebrew/Arabic RTL rendering." || true
+          gh release upload rtl dist/* --clobber
