@@ -163,7 +163,7 @@ index 0000000..a21e995
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/BidiLayout.java b/terminal-view/src/main/java/com/termux/view/BidiLayout.java
 new file mode 100644
-index 0000000..9d1a401
+index 0000000..a81357e
 --- /dev/null
 +++ b/terminal-view/src/main/java/com/termux/view/BidiLayout.java
 @@ -0,0 +1,249 @@
@@ -229,10 +229,10 @@ index 0000000..9d1a401
 +    /** Quick check whether a terminal row contains any strong right-to-left character. */
 +    static boolean containsRtl(char[] line, int charsUsed) {
 +        for (int i = 0; i < charsUsed; i++) {
-+            int codePoint = line[i];
-+            if (Character.isHighSurrogate(codePoint) && i + 1 < charsUsed)
-+                codePoint = Character.toCodePoint(line[i], line[++i]);
-+            if (isStrongRtl(codePoint))
++            char c = line[i];
++            if (Character.isHighSurrogate(c) && i + 1 < charsUsed)
++                c = line[++i];
++            if (isStrongRtl(c))
 +                return true;
 +        }
 +        return false;
@@ -470,13 +470,14 @@ index 0000000..c2b53f5
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/IcuBidi.java b/terminal-view/src/main/java/com/termux/view/IcuBidi.java
 new file mode 100644
-index 0000000..113a2bd
+index 0000000..7cec905
 --- /dev/null
 +++ b/terminal-view/src/main/java/com/termux/view/IcuBidi.java
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,38 @@
 +package com.termux.view;
 +
 +import android.icu.text.Bidi;
++import android.icu.text.BidiRun;
 +
 +/**
 + * ICU4J backed implementation of {@link BidiLayout.VisualRuns}.
@@ -502,11 +503,13 @@ index 0000000..113a2bd
 +
 +        @Override public int count() { return mBidi.countRuns(); }
 +
-+        @Override public int logicalStart(int run) { return mBidi.getRunStart(mBidi.getVisualRun(run)); }
++        @Override public int logicalStart(int run) { return bidiRun(run).getStart(); }
 +
-+        @Override public int logicalLimit(int run) { return mBidi.getRunLimit(mBidi.getVisualRun(run)); }
++        @Override public int logicalLimit(int run) { return bidiRun(run).getLimit(); }
 +
-+        @Override public boolean isRtl(int run) { return !mBidi.isLeftToRight(mBidi.getVisualRun(run)); }
++        @Override public boolean isRtl(int run) { return bidiRun(run).isOddRun(); }
++
++        private BidiRun bidiRun(int visualRun) { return mBidi.getVisualRun(visualRun); }
 +    }
 +}
 diff --git a/terminal-view/src/main/java/com/termux/view/TerminalRenderer.java b/terminal-view/src/main/java/com/termux/view/TerminalRenderer.java
