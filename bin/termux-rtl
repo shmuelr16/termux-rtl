@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""termux-rtl - make Hebrew/Arabic render correctly inside Termux.
+
+Termux's terminal has no Unicode BiDi engine, so RTL text comes out backwards.
+This filter applies the Unicode Bidirectional Algorithm (UAX#9) + Arabic
+contextual shaping before the text reaches the screen.
+
+Usage:
+  cat file.txt | termux-rtl
+  termux-rtl --dir=rtl text.txt
+  termux-rtl --selftest
+"""
+
+import argparse
+import ctypes
+import ctypes.util
+import os
+import re
+import sys
+
+RTL_RANGES = (
+    "\u0590-\u05ff"  # Hebrew
+    "\u0600-\u07bf"  # Arabic, Syriac, Thaana, NKo
+    "\u0860-\u08ff"  # Arabic extended-A/B
+    "\ufb1d-\ufdff"  # Hebrew/Arabic presentation forms A
+    "\ufe70-\ufeff"  # Arabic presentation forms B
+    "\U00010800-\U00010fff"  # ancient RTL scripts
+    "\U0001e800-\U0001efff"
+)
+RTL_RE = re.compile("[" + RTL_RANGES + "]")
+
+# one capturing group so re.split keeps the escape sequences in place
+ANSI_RE = re.compile(
+    "("
+    "\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)"  # OSC ... BEL/ST
+    "|\x1b[@-Z\\\\-_]"  # 2-char escapes
+    "|\x1b\\[[0-?]*[ -/]*[@-~]"  # CSI
+    "|\x1b"  # stray ESC
+    ")"
+)
+
+VISUAL_STR_TYPE = 0xFFFFFFFF
+FRIBIDI_PAR_LTR = 0x10
+FRIBIDI_PAR_RTL = 0x11
+FRIBIDI_FLAG_REORDER_NSM = 0x00000002
+FRIBIDI_FLAGS_REORDER = FRIBIDI_FLAG_REORDER_NSM
+
+
+def load_fribidi():
+    candidates = [
+        os.environ.get("FRIBIDI_LIB"),
+        ctypes.util.find_library("fribidi"),
+        "libfribidi.so.0",
+        "libfribidi.so",
+        "/usr/local/lib/libfribidi.so",
+    ]
+    prefix = os.environ.get("PREFIX")
+    if prefix:
+        candidates.insert(1, os.path.join(prefix, "lib", "libfribidi.so"))
+    lib = None
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            lib = ctypes.CDLL(name)
+            break
+        except OSError:
+            continue
+    if lib is None:
+        return None
+
+    FriBidiChar = ctypes.c_uint32
+    FriBidiLevel = ctypes.c_ubyte
+    FriBidiStrIndex = ctypes.c_int32
+    FriBidiParType = ctypes.c_ubyte
+
+    # fribidi >= 1.0 API (all functions are length based, no NUL needed)
+    lib.fribidi_get_bidi_types.argtypes = [
+        ctypes.POINTER(FriBidiChar),
+        FriBidiStrIndex,
+        ctypes.POINTER(FriBidiChar),
+    ]
+    lib.fribidi_get_bidi_types.restype = None
+    lib.fribidi_get_bracket_types.argtypes = [
+        ctypes.POINTER(FriBidiChar),
+        FriBidiStrIndex,
+        ctypes.POINTER(FriBidiChar),
+        ctypes.POINTER(FriBidiChar),
+    ]
+    lib.fribidi_get_bracket_types.restype = None
+    lib.fribidi_get_par_embedding_levels_ex.argtypes = [
+        ctypes.POINTER(FriBidiChar),
+        ctypes.POINTER(FriBidiChar),
+        FriBidiStrIndex,
+        ctypes.POINTER(FriBidiParType),
+        ctypes.POINTER(FriBidiLevel),
+    ]
+    lib.fribidi_get_par_embedding_levels_ex.restype = FriBidiLevel
+    lib.fribidi_shape_mirroring.argtypes = [
+        ctypes.POINTER(FriBidiLevel),
+        FriBidiStrIndex,
+        ctypes.POINTER(FriBidiChar),
+    ]
+    lib.fribidi_shape_mirroring.restype = None
+    lib.fribidi_reorder_line.argtypes = [
+        ctypes.c_int,
+        ctypes.POINTER(FriBidiChar),
+        FriBidiStrIndex,
+        FriBidiStrIndex,
+        FriBidiParType,
+        ctypes.POINTER(FriBidiLevel),
+        ctypes.POINTER(FriBidiChar),
+        ctypes.c_void_p,
+    ]
+    lib.fribidi_reorder_line.restype = FriBidiLevel
+    return lib
+
+
+class FriBidiEngine:
+    name = "fribidi"
+
+    def __init__(self):
+        self.lib = load_fribidi()
+
+    def available(self):
+        return self.lib is not None
+
+    def reorder(self, text, base_rtl):
+        lib = self.lib
+        codes = [ord(c) for c in text]
+        n = len(codes)
+        if n == 0:
+            return text
+        Char = ctypes.c_uint32
+        src = (Char * n)(*codes)
+        types = (Char * n)()
+        brackets = (Char * n)()
+        levels = (ctypes.c_ubyte * n)()
+        base = ctypes.c_ubyte(FRIBIDI_PAR_RTL if base_rtl else FRIBIDI_PAR_LTR)
+
+        lib.fribidi_get_bidi_types(src, n, types)
+        lib.fribidi_get_bracket_types(src, n, types, brackets)
+        lib.fribidi_get_par_embedding_levels_ex(
+            types,
+            brackets,
+            n,
+            ctypes.byref(base),
+            levels,
+        )
+        visual = (Char * n)(*codes)
+        lib.fribidi_shape_mirroring(levels, n, visual)
+        lib.fribidi_reorder_line(
+            FRIBIDI_FLAGS_REORDER,
+            types,
+            n,
+            0,
+            base.value,
+            levels,
+            visual,
+            None,
+        )
+        return "".join(chr(visual[i]) for i in range(n))
+
+
+class PythonBidiEngine:
+    name = "python-bidi"
+
+    def __init__(self):
+        try:
+            from bidi import get_display
+        except ImportError:
+            self.get_display = None
+        else:
+            self.get_display = get_display
+
+    def available(self):
+        return self.get_display is not None
+
+    def reorder(self, text, base_rtl):
+        base_dir = "R" if base_rtl else "L"
+        return self.get_display(text, base_dir=base_dir)
+
+
+class NoopEngine:
+    name = "none"
+
+    def available(self):
+        return False
+
+    def reorder(self, text, base_rtl):
+        return text
+
+
+def pick_engine():
+    for engine in (FriBidiEngine(), PythonBidiEngine()):
+        if engine.available():
+            return engine
+    return NoopEngine()
+
+
+def load_reshaper():
+    try:
+        import arabic_reshaper
+    except ImportError:
+        return None
+    return arabic_reshaper.reshape
+
+
+def has_rtl(text):
+    return bool(RTL_RE.search(text))
+
+
+def first_strong_rtl(text):
+    for ch in text:
+        if RTL_RE.match(ch):
+            return True
+        if ch.isalpha() and ord(ch) < 0x0590:
+            return False
+    return False
+
+
+def shape_line(text, reshaper, do_shape):
+    if do_shape and reshaper is not None and has_arabic(text):
+        try:
+            return reshaper(text)
+        except Exception:
+            return text
+    return text
+
+
+def has_arabic(text):
+    for ch in text:
+        code = ord(ch)
+        if 0x0600 <= code <= 0x06FF or 0x0750 <= code <= 0x077F:
+            return True
+        if 0xFB50 <= code <= 0xFDFF or 0xFE70 <= code <= 0xFEFF:
+            return True
+    return False
+
+
+def convert_line(line, engine, reshaper, do_shape, force_dir):
+    if not has_rtl(line):
+        return line
+    parts = ANSI_RE.split(line)
+    if not any(has_rtl(p) for p in parts):
+        return line
+    base_rtl = force_dir == "rtl" if force_dir in ("ltr", "rtl") else first_strong_rtl(line)
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1 or not part or not has_rtl(part):
+            out.append(part)
+            continue
+        out.append(engine.reorder(shape_line(part, reshaper, do_shape), base_rtl))
+    return "".join(out)
+
+
+def process(stream_in, stream_out, engine, reshaper, do_shape, force_dir):
+    buf = ""
+    while True:
+        chunk = stream_in.read(4096)
+        if not chunk:
+            break
+        buf += chunk
+        *lines, buf = buf.split("\n")
+        for line in lines:
+            stream_out.write(convert_line(line, engine, reshaper, do_shape, force_dir))
+            stream_out.write("\n")
+        stream_out.flush()
+    if buf:
+        stream_out.write(convert_line(buf, engine, reshaper, do_shape, force_dir))
+        stream_out.flush()
+
+
+def selftest():
+    engine = pick_engine()
+    reshaper = load_reshaper()
+    failures = 0
+    print("engine: %s   arabic-shaping: %s" % (engine.name, "yes" if reshaper else "no"))
+    cases = [
+        ("שלום", "םולש", "rtl"),
+        ("שלום world", "world םולש", "auto"),
+        ("hello שלום", "hello םולש", "auto"),
+        ("123 pure ascii", "123 pure ascii", "auto"),
+        ("\x1b[31mשלום\x1b[0m b", "\x1b[31mםולש\x1b[0m b", "auto"),
+        ("\u05d6\u05d4\u05d5 (\u05d8\u05e7\u05e1\u05d8) \u05e0\u05e7\u05d5\u05d3\u05d4.", ".\u05d4\u05d3\u05d5\u05e7\u05e0 (\u05d8\u05e1\u05e7\u05d8) \u05d5\u05d4\u05d6", "auto"),  # mirrored brackets
+    ]
+    for text, want, direction in cases:
+        got = convert_line(text, engine, reshaper, True, None if direction == "auto" else direction)
+        ok = got == want
+        failures += 0 if ok else 1
+        print("%s %-18s -> %-18s (want %s)" % ("PASS" if ok else "FAIL", text, got, want))
+    if reshaper:
+        shaped = convert_line("السلام", engine, reshaper, True, None)
+        joined = "".join(ch for ch in shaped if "\ufb50" <= ch <= "\ufdff" or "\ufe70" <= ch <= "\ufeff")
+        ok = len(joined) >= 3
+        failures += 0 if ok else 1
+        print("%s arabic shaping produced %d presentation forms" % ("PASS" if ok else "FAIL", len(joined)))
+    print("OK" if failures == 0 else "FAILED (%d)" % failures)
+    return 1 if failures else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="termux-rtl",
+        description="Render Hebrew/Arabic in the right visual order (Termux).",
+    )
+    parser.add_argument("files", nargs="*", help="input files (default: stdin)")
+    parser.add_argument(
+        "-d",
+        "--dir",
+        choices=["auto", "ltr", "rtl"],
+        default="auto",
+        help="base paragraph direction (default: auto)",
+    )
+    parser.add_argument("--no-shape", action="store_true", help="skip Arabic letter shaping")
+    parser.add_argument("--selftest", action="store_true", help="run built-in checks and exit")
+    parser.add_argument("--engine", action="store_true", help="print the active bidi engine and exit")
+    args = parser.parse_args()
+
+    if args.selftest:
+        return selftest()
+
+    engine = pick_engine()
+    if args.engine:
+        print(engine.name)
+        return 0
+    if not engine.available():
+        sys.stderr.write("termux-rtl: no BiDi engine found. Run: pkg install fribidi python\n")
+        return 1
+
+    reshaper = load_reshaper()
+    force_dir = None if args.dir == "auto" else args.dir
+
+    out = sys.stdout
+    if not args.files:
+        process(sys.stdin, out, engine, reshaper, not args.no_shape, force_dir)
+        return 0
+
+    for path in args.files:
+        if path == "-":
+            process(sys.stdin, out, engine, reshaper, not args.no_shape, force_dir)
+            continue
+        try:
+            handle = open(path, "r", encoding="utf-8", errors="replace")
+        except OSError as exc:
+            sys.stderr.write("termux-rtl: %s\n" % exc)
+            return 1
+        with handle:
+            process(handle, out, engine, reshaper, not args.no_shape, force_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        sys.exit(0)

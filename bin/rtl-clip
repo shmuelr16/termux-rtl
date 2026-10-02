@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""rtl-clip - put RTL text on the clipboard in a shape Termux can display.
+
+Termux has no BiDi engine, so Hebrew/Arabic pasted into other apps comes out
+reversed. This helper reshapes + reorders the text first, then copies it with
+Termux:API (termux-clipboard-set) or prints it when the add-on is missing.
+
+Usage:
+  echo "שלום" | rtl-clip
+  rtl-clip "שלום עולם"
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+
+CORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "termux-rtl")
+
+
+def load_core():
+    if not os.path.exists(CORE):
+        sys.stderr.write("%s: missing %s - reinstall with install.sh\n" % (os.path.basename(sys.argv[0]), CORE))
+        raise SystemExit(1)
+    loader = importlib.machinery.SourceFileLoader("termux_rtl_core", CORE)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rtl-clip",
+        description="Copy RTL text to the clipboard, visually reordered.",
+    )
+    parser.add_argument("-d", "--dir", choices=["auto", "ltr", "rtl"], default="auto")
+    parser.add_argument("--no-shape", action="store_true")
+    parser.add_argument("--print", dest="print_only", action="store_true")
+    parser.add_argument("text", nargs="*")
+    args = parser.parse_args()
+
+    core = load_core()
+    engine = core.pick_engine()
+    if not engine.available():
+        sys.stderr.write("rtl-clip: no BiDi engine found. Run: pkg install fribidi python\n")
+        return 1
+    reshaper = core.load_reshaper()
+    force_dir = None if args.dir == "auto" else args.dir
+
+    if args.text:
+        text = " ".join(args.text)
+    else:
+        text = sys.stdin.read()
+
+    lines = text.split("\n")
+    out = "\n".join(
+        core.convert_line(line, engine, reshaper, not args.no_shape, force_dir)
+        for line in lines
+    )
+
+    clip = shutil.which("termux-clipboard-set")
+    if clip and not args.print_only:
+        proc = subprocess.run([clip], input=out.encode("utf-8"))
+        if proc.returncode == 0:
+            print("copied to clipboard")
+            return 0
+        sys.stderr.write("rtl-clip: clipboard failed, printing instead\n")
+    sys.stdout.write(out)
+    if not out.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        sys.exit(0)

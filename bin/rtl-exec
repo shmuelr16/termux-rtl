@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""rtl-exec - run a command and render its RTL output correctly.
+
+The child keeps a real TTY (so colors, spinners and progress bars still work),
+but everything it prints is passed through the BiDi filter before it reaches
+your screen.
+
+Usage:
+  rtl-exec claude
+  rtl-exec git log --oneline | less
+  rtl-exec -- python3 script.py
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+import pty
+import select
+import signal
+import sys
+import time
+
+sys.dont_write_bytecode = True
+
+CORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "termux-rtl")
+
+
+def load_core():
+    if not os.path.exists(CORE):
+        sys.stderr.write("%s: missing %s - reinstall with install.sh\n" % (os.path.basename(sys.argv[0]), CORE))
+        raise SystemExit(1)
+    loader = importlib.machinery.SourceFileLoader("termux_rtl_core", CORE)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rtl-exec",
+        description="Run a command with RTL-correct output.",
+    )
+    parser.add_argument("-d", "--dir", choices=["auto", "ltr", "rtl"], default="auto")
+    parser.add_argument("--no-shape", action="store_true")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    command = args.command
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        parser.error("no command given")
+
+    core = load_core()
+    engine = core.pick_engine()
+    if not engine.available():
+        sys.stderr.write("rtl-exec: no BiDi engine found. Run: pkg install fribidi python\n")
+        return 1
+    reshaper = core.load_reshaper()
+    force_dir = None if args.dir == "auto" else args.dir
+    shape = not args.no_shape
+
+    def convert(line):
+        return core.convert_line(line, engine, reshaper, shape, force_dir)
+
+    master, slave = pty.openpty()
+    try:
+        import termios
+
+        attrs = termios.tcgetattr(slave)
+        attrs[3] &= ~termios.ECHO  # no double echo, we print ourselves
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    except Exception:
+        pass
+
+    child = None
+    try:
+        child = os.fork()
+    except OSError as exc:
+        sys.stderr.write("rtl-exec: fork failed: %s\n" % exc)
+        os.close(master)
+        os.close(slave)
+        return 1
+
+    if child == 0:
+        os.close(master)
+        os.setsid()
+        try:
+            import fcntl
+
+            fcntl.ioctl(slave, 0x5401, 0)  # TIOCSCTTY
+        except Exception:
+            pass
+        os.dup2(slave, 1)
+        os.dup2(slave, 2)
+        if slave > 2:
+            os.close(slave)
+        os.execvp(command[0], command)
+        os._exit(127)
+
+    os.close(slave)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, lambda s, f: os.kill(child, s))
+        except (ValueError, OSError, AttributeError):
+            pass
+
+    out = sys.stdout.buffer
+    tail = ""
+    last_data = time.time()
+
+    def flush(force=False):
+        nonlocal tail
+        if not tail:
+            return
+        if not force and b"\n" not in tail.encode("utf-8", "ignore") and time.time() - last_data < 0.12:
+            return
+        out.write(convert(tail).encode("utf-8"))
+        out.flush()
+        tail = ""
+
+    while True:
+        try:
+            ready, _, _ = select.select([master], [], [], 0.1)
+        except InterruptedError:
+            continue
+        except OSError:
+            break
+        if ready:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            last_data = time.time()
+            text = data.decode("utf-8", "replace")
+            text = tail + text
+            pieces = []
+            current = []
+            for ch in text:
+                if ch in ("\n", "\r"):
+                    pieces.append("".join(current) + ch)
+                    current = []
+                else:
+                    current.append(ch)
+            tail = "".join(current)
+            if pieces:
+                out.write("".join(convert(p) for p in pieces).encode("utf-8"))
+                out.flush()
+        else:
+            flush()
+
+    flush(force=True)
+    os.close(master)
+    _, status = os.waitpid(child, 0)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return os.WEXITSTATUS(status)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        sys.exit(0)
